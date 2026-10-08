@@ -1,0 +1,4 @@
+out/
+*.mp4
+.agent_key
+.env

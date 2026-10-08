@@ -1,0 +1,43 @@
+name: Build video
+
+on:
+  repository_dispatch:
+    types: [creatical-video]
+  workflow_dispatch:
+    inputs:
+      job:
+        description: 'Job JSON: {"client": "...", "item": {"title","pillar","hook","script","cta"}}'
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install ffmpeg, fonts and a fallback voice
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-liberation espeak-ng
+      - run: pip install -r requirements.txt
+      - name: Build the video and send it to Telegram
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          NO_DRIVE: '1'
+          KEEP_DIR: ${{ github.workspace }}/final
+          JOB: ${{ github.event_name == 'repository_dispatch' && toJSON(github.event.client_payload.job) || inputs.job }}
+        run: |
+          printf '%s' "$JOB" > job.json
+          python3 agent.py --file job.json
+      - name: Keep the video for 14 days (workflow artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: video
+          path: final/*.mp4
+          retention-days: 14
