@@ -10,7 +10,7 @@ on:
         required: true
 
 permissions:
-  contents: read
+  contents: write   # needed to publish public demo videos as release assets
 
 jobs:
   build:
@@ -24,7 +24,7 @@ jobs:
       - name: Install ffmpeg, fonts and a fallback voice
         run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-liberation espeak-ng
       - run: pip install -r requirements.txt
-      - name: Build the video and send it to Telegram
+      - name: Build the video (sent to Telegram unless it is a public demo job)
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -34,7 +34,17 @@ jobs:
           JOB: ${{ github.event_name == 'repository_dispatch' && toJSON(github.event.client_payload.job) || inputs.job }}
         run: |
           printf '%s' "$JOB" > job.json
-          python3 agent.py --file job.json
+          PUBLIC=$(python3 -c "import json;print(1 if json.load(open('job.json')).get('public') else 0)")
+          JOB_ID=$(python3 -c "import json,re;print(re.sub(r'[^A-Za-z0-9_-]','',str(json.load(open('job.json')).get('id','job'))))")
+          echo "PUBLIC=$PUBLIC" >> "$GITHUB_ENV"
+          echo "JOB_ID=$JOB_ID" >> "$GITHUB_ENV"
+          if [ "$PUBLIC" = "1" ]; then python3 agent.py --file job.json --no-send; else python3 agent.py --file job.json; fi
+      - name: Publish the video as a release asset (public demo jobs only)
+        if: env.PUBLIC == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "job-$JOB_ID" final/*.mp4 --repo "$GITHUB_REPOSITORY" --title "Demo video $JOB_ID" --notes "Generated for the public demo page."
       - name: Keep the video for 14 days (workflow artifact)
         uses: actions/upload-artifact@v4
         with:

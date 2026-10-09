@@ -7,6 +7,7 @@
 """
 import argparse
 import datetime
+import hashlib
 import json
 import os
 import re
@@ -60,6 +61,34 @@ def slug(s):
     return s[:60] or "video"
 
 
+NETLIFY_API = "https://api.netlify.com/api/v1"
+
+
+def _netlify(method, path, token, data=None, ctype="application/json"):
+    req = urllib.request.Request(NETLIFY_API + path, data=data, method=method,
+                                 headers={"Authorization": f"Bearer {token}", "Content-Type": ctype})
+    with urllib.request.urlopen(req, timeout=120) as r:
+        body = r.read()
+        return json.loads(body) if body else {}
+
+
+def publish_demo(video_path, job_id):
+    """Add /demos/<id>.mp4 to the live Netlify site without touching the other files (file-digest deploy)."""
+    token = os.environ["NETLIFY_TOKEN"]
+    site = os.environ.get("NETLIFY_SITE", "gleeful-brioche-7763f3.netlify.app")
+    if not re.fullmatch(r"d[a-z0-9]{6,24}", str(job_id)):
+        raise ValueError("bad job id")
+    data = open(video_path, "rb").read()
+    sha = hashlib.sha1(data).hexdigest()
+    path = f"/demos/{job_id}.mp4"
+    files = {f["path"]: f["sha"] for f in _netlify("GET", f"/sites/{site}/files", token) if f.get("path") and f.get("sha")}
+    files[path] = sha
+    dep = _netlify("POST", f"/sites/{site}/deploys", token, json.dumps({"files": files}).encode())
+    if sha in (dep.get("required") or []):
+        _netlify("PUT", f"/deploys/{dep['id']}/files{path}", token, data, "application/octet-stream")
+    print(f"    Netlify: https://{site}{path}")
+
+
 def handle(job, send=True):
     item, client = job["item"], job["client"]
     print(f"-> job: {client} / {item.get('title')}")
@@ -89,12 +118,15 @@ def handle(job, send=True):
             os.makedirs(os.path.join(HERE, "out"), exist_ok=True)
             saved = shutil.copyfile(out, os.path.join(HERE, "out", os.path.basename(out)))
 
+        if job.get("delivery") == "web" and os.environ.get("NETLIFY_TOKEN"):
+            publish_demo(out, job.get("id"))
+
         if send:
             token = os.environ.get("TELEGRAM_BOT_TOKEN") or sys.exit("TELEGRAM_BOT_TOKEN missing")
             where = ("☁️ Enregistrée dans Google Drive > Creatical Videos" if dest
                      else "☁️ Générée dans le cloud (GitHub Actions)" if os.environ.get("NO_DRIVE") else "(copie locale, Drive indisponible)")
             r = send_telegram(token, os.environ.get("TELEGRAM_CHAT_ID", DEFAULT_CHAT), out,
-                              f"🎬 {item.get('title')}\n{where}")
+                              f"🎬 {item.get('title')}\n{where}" + ("\n(démo lancée depuis la page publique)" if job.get("delivery") == "web" else ""))
             print("    Telegram:", "sent" if r.get("ok") else r)
     finally:
         shutil.rmtree(work, ignore_errors=True)
